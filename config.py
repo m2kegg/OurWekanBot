@@ -1,0 +1,4 @@
+BOT_TOKEN = "7610202212:AAEMDnIjOxMFlIhPHisDjJI49rvlIGV66zA"
+ADMIN_IDS = [123456789]
+BASE_URL = "t.me/OurWekanBot"
+DATABASE_URL = "sqlite:///./bot.db"
