@@ -47,7 +47,7 @@ class Task(SQLAlchemyBase):
     State = Column(Enum(TaskEnum))
 
     project = relationship("TaskProjectAssociation", back_populates="task")
-    users = relationship("UserTaskAssociation", back_populates="tasks")
+    user_associations = relationship("UserTaskAssociation", back_populates="task")
 
 class UserProjectAssociation(SQLAlchemyBase):
     __tablename__ = "user_project_association"
@@ -66,7 +66,7 @@ class UserTaskAssociation(SQLAlchemyBase):
     task_id = Column(Integer, ForeignKey("tasks.task_id"), primary_key=True)
 
     users = relationship("User", back_populates="tasks")
-    task = relationship("Task", back_populates="users")
+    task = relationship("Task", back_populates="user_associations")
 
 class TaskProjectAssociation(SQLAlchemyBase):
     __tablename__ = "task_project_association"

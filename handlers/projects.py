@@ -173,6 +173,7 @@ async def change_user_role(callback: CallbackQuery, state: FSMContext):
 @router.message(F.text == "Создать проект")
 async def create_project(message: Message, state: FSMContext):
     await message.answer("Как назовем проект?")
+    
     await state.set_state(CreateProjectForm.waiting_for_project_name)
 
 
@@ -190,7 +191,6 @@ async def process_project_name(message: Message, state: FSMContext):
     session.add(user_project_association)
     session.commit()
     session.close()
-
     await message.answer(f"Проект '{project_name}' создан! Ты являешься администратором.")
     await message.answer(f"Ключ для присоединения к проекту: `{project_key}`", parse_mode="Markdown")
     await state.clear()
@@ -228,3 +228,9 @@ async def process_project_key(message: Message, state: FSMContext):
 
     session.close()
     await state.clear()
+
+@router.callback_query(F.data.startswith('Отмена'))  # Стейты не передаются
+async def quit(call: CallbackQuery, state: FSMContext):
+    await state.clear()  # Вместо finish используется clear [1](https://qna.habr.com/q/1258888)
+    await call.message.delete()  # Удаляем прошлое сообщение [1](https://qna.habr.com/q/1258888)
+    await call.message.answer('❌Отправка отменена')  # Выводим сообщение «Отправка отменена» [1](https://qna.habr.com/q/1258888)
