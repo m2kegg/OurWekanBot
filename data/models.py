@@ -1,10 +1,17 @@
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Boolean, Date, UnicodeText
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Boolean, Date, UnicodeText, Enum
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.declarative import declarative_base
+import enum
 import uuid
 
 SQLAlchemyBase = declarative_base()
 
+class TaskEnum(enum.Enum):
+    CREATED = "CREATED"
+    IN_WORK = "IN_WORK"
+    ON_REVISION = "ON_REVISION"
+    DONE = "DONE"
+    
 class User(SQLAlchemyBase):
     __tablename__ = "users"
 
@@ -36,7 +43,8 @@ class Task(SQLAlchemyBase):
     project_id = Column(Integer, ForeignKey("projects.project_id"), primary_key=True)
     start_date = Column(Date)
     deadline_date = Column(Date)
-    time_taken=Column(String)
+    time_taken=Column(Integer)
+    State = Column(Enum(TaskEnum))
 
     project = relationship("TaskProjectAssociation", back_populates="task")
     users = relationship("UserTaskAssociation", back_populates="tasks")
