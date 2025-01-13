@@ -1,8 +1,9 @@
 import logging
 import uuid
 
-from aiogram import Router, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
+from aiogram import Router, F, Bot
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, \
+    KeyboardButton, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from config import BASE_URL, DATABASE_URL
@@ -16,6 +17,7 @@ MEMBERS_PER_PAGE = 5
 
 class CreateProjectForm(StatesGroup):
     waiting_for_project_name = State()
+    waiting_for_project_description = State()
 
 
 class JoinProjectForm(StatesGroup):
@@ -37,7 +39,10 @@ async def show_user_projects_paged(message: Message, state: FSMContext, page: in
     session.close()
 
     if not user_projects:
-        await message.answer("Ты пока не участвуешь ни в одном проекте.")
+        if callback_query:
+            await callback_query.message.edit_text("Ты пока не участвуешь ни в одном проекте.")
+        else:
+            await message.answer("Ты пока не участвуешь ни в одном проекте.")
         return
 
     total_projects = len(user_projects)
@@ -61,13 +66,16 @@ async def show_user_projects_paged(message: Message, state: FSMContext, page: in
         keyboard_buttons.append(navigation_buttons)
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-    await message.answer("Твои проекты:", reply_markup=markup)
+    if callback_query:
+        await callback_query.message.edit_text("Твои проекты:", reply_markup=markup)
+    else:
+        await message.answer("Твои проекты:", reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("projects_page:"))
-async def paginate_projects(callback: CallbackQuery, state: FSMContext):
+async def paginate_projects(callback: CallbackQuery, bot: Bot, state: FSMContext):
     page = int(callback.data.split(":")[1])
-    await show_user_projects_paged(callback.message, state, page, callback)
+    await show_user_projects_paged(callback.message, state, page, callback_query=callback)
     await callback.answer()
 
 
@@ -172,9 +180,10 @@ async def change_user_role(callback: CallbackQuery, state: FSMContext):
     session.close()
     await callback.answer()
 
-@router.callback_query(F.data.startswith("cancel_project"))
+@router.callback_query(F.data == "cancel_project")
 async def cancel_project_fun(callback: CallbackQuery, state: FSMContext):
-    if state == CreateProjectForm.waiting_for_project_name:
+    current_state = await state.get_state()
+    if current_state == CreateProjectForm.waiting_for_project_name:
         await callback.message.answer("Создание проекта отменено", reply_markup=get_main_keyboard())
         await state.clear()
     return
@@ -184,10 +193,11 @@ async def create_project(message: Message, state: FSMContext):
     await state.clear()
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Отмена", callback_data="cancel_project")]
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_project")]
               ],
         resize_keyboard=True
     )
+    await message.answer("Внимание: сейчас будет вызвана процедура создания проекта. Далее Вам необходимо ввести название проекта и его описание.", reply_markup=ReplyKeyboardRemove())
     await message.answer("Как назовем проект?", reply_markup=keyboard)
     
     await state.set_state(CreateProjectForm.waiting_for_project_name)
@@ -195,16 +205,35 @@ async def create_project(message: Message, state: FSMContext):
 
 @router.message(CreateProjectForm.waiting_for_project_name)
 async def process_project_name(message: Message, state: FSMContext):
-    if F.data == "cancel_project":
-        logging.info("Canceling project creation")
-        await message.answer("Создание проекта отменено", reply_markup=get_main_keyboard())
-        await state.clear()
-        return
     project_name = message.text
+    await state.update_data(project_name=project_name)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_project")],
+            [InlineKeyboardButton(text="⬅️ Назад к выбору имени", callback_data="back_to_name")]
+        ],
+        resize_keyboard=True
+    )
+    await message.answer(f"Имя твоего проекта - {project_name}.")
+    await message.answer(f"Перейдём к описанию проекта. Учти, что на основе него GigaChat будет выдавать анализ выполнения проекта, поэтому стоит расписать детали более подробно.", reply_markup=keyboard)
+    await state.set_state(CreateProjectForm.waiting_for_project_description)
+
+@router.callback_query(F.data == "back_to_name")
+async def back_to_project_name(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(CreateProjectForm.waiting_for_project_name)
+    await callback.message.edit_text("Введите новое имя проекта:")
+    await callback.answer()
+
+
+@router.message(CreateProjectForm.waiting_for_project_description)
+async def process_project_description(message: Message, state: FSMContext):
+    project_desc = message.text
     user_id = message.from_user.id
     session = create_db_session(DATABASE_URL)
     project_key = generate_unique_project_key()
-    project = Project(name=project_name, owner_id=user_id, project_key=project_key)
+    data = await state.get_data()
+    project_name = data.get("project_name")
+    project = Project(name=project_name, description=project_desc, owner_id=user_id, project_key=project_key)
     session.add(project)
     session.flush()
     user_project_association = UserProjectAssociation(user_id=user_id, project_id=project.project_id,
@@ -212,15 +241,14 @@ async def process_project_name(message: Message, state: FSMContext):
     session.add(user_project_association)
     session.commit()
     session.close()
-    await message.answer(f"Проект '{project_name}' создан! Ты являешься администратором.")
+    await message.answer(f"Проект '{project_name}' создан! Ты являешься администратором.",
+                         reply_markup=get_main_keyboard())
     await message.answer(f"Ключ для присоединения к проекту: `{project_key}`", parse_mode="Markdown")
     await state.clear()
 
-
 @router.message(F.text=="Присоединиться к проекту")
 async def join_project_command(message: Message, state: FSMContext):
-    await state.clear()  # Добавляем сброс состояния
-    logging.info(FSMContext)
+    await state.clear()
     await message.answer("Введите ключ проекта:")
     await state.set_state(JoinProjectForm.waiting_for_project_key)
 

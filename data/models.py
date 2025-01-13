@@ -27,6 +27,7 @@ class Project(SQLAlchemyBase):
     project_id = Column(Integer, primary_key=True)
     name = Column(String)
     owner_id = Column(Integer, ForeignKey("users.user_id"))
+    description = Column(UnicodeText)
     project_key = Column(String, unique=True, index=True)  # Добавляем поле для ключа проекта
     
 
