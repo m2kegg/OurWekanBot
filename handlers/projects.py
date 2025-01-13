@@ -1,7 +1,7 @@
 import uuid
 
 from aiogram import Router, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from config import BASE_URL, DATABASE_URL
@@ -169,16 +169,32 @@ async def change_user_role(callback: CallbackQuery, state: FSMContext):
     session.close()
     await callback.answer()
 
+@router.callback_query(F.data.startswith("cancel_project"))
+async def change_user_role(callback: CallbackQuery, state: FSMContext):
+    if(state == CreateProjectForm.waiting_for_project_name):
+        await callback.message.answer("Создание проекта отменено", reply_markup=get_main_keyboard())
+        await state.clear()
+    return
 
 @router.message(F.text == "Создать проект")
 async def create_project(message: Message, state: FSMContext):
-    await message.answer("Как назовем проект?")
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Отмена", callback_data="cancel_project")]
+              ],
+        resize_keyboard=True
+    )
+    await message.answer("Как назовем проект?", reply_markup=keyboard)
     
     await state.set_state(CreateProjectForm.waiting_for_project_name)
 
 
 @router.message(CreateProjectForm.waiting_for_project_name)
 async def process_project_name(message: Message, state: FSMContext):
+    if message.text == "Отмена":
+        await message.answer("Создание проекта отменено", reply_markup=get_main_keyboard())
+        await state.clear()
+        return
     project_name = message.text
     user_id = message.from_user.id
     session = create_db_session(DATABASE_URL)
@@ -196,10 +212,20 @@ async def process_project_name(message: Message, state: FSMContext):
     await state.clear()
 
 
-@router.message(F.text("Присоединиться к проекту"))
+@router.message(F.text=="Присоединиться к проекту")
 async def join_project_command(message: Message, state: FSMContext):
     await message.answer("Введите ключ проекта:")
     await state.set_state(JoinProjectForm.waiting_for_project_key)
+
+def get_main_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Мои проекты")],
+            [KeyboardButton(text="Создать проект")],
+            [KeyboardButton(text="Присоединиться к проекту")],
+        ],
+        resize_keyboard=True
+    )
 
 
 @router.message(JoinProjectForm.waiting_for_project_key)
@@ -229,8 +255,3 @@ async def process_project_key(message: Message, state: FSMContext):
     session.close()
     await state.clear()
 
-@router.callback_query(F.data.startswith('Отмена'))  # Стейты не передаются
-async def quit(call: CallbackQuery, state: FSMContext):
-    await state.clear()  # Вместо finish используется clear [1](https://qna.habr.com/q/1258888)
-    await call.message.delete()  # Удаляем прошлое сообщение [1](https://qna.habr.com/q/1258888)
-    await call.message.answer('❌Отправка отменена')  # Выводим сообщение «Отправка отменена» [1](https://qna.habr.com/q/1258888)

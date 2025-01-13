@@ -19,7 +19,7 @@ class User(SQLAlchemyBase):
     fullname = Column(String)
 
     projects = relationship("UserProjectAssociation", back_populates="user")
-    tasks = relationship("UserTaskAssociation", back_populates="users")
+    tasks = relationship("UserTaskAssociation", back_populates="user")
 
 class Project(SQLAlchemyBase):
     __tablename__ = "projects"
@@ -47,7 +47,7 @@ class Task(SQLAlchemyBase):
     State = Column(Enum(TaskEnum))
 
     project = relationship("TaskProjectAssociation", back_populates="task")
-    user_associations = relationship("UserTaskAssociation", back_populates="task")
+    users = relationship("UserTaskAssociation", back_populates="task")
 
 class UserProjectAssociation(SQLAlchemyBase):
     __tablename__ = "user_project_association"
@@ -65,8 +65,8 @@ class UserTaskAssociation(SQLAlchemyBase):
     user_id = Column(Integer, ForeignKey("users.user_id"), primary_key=True)
     task_id = Column(Integer, ForeignKey("tasks.task_id"), primary_key=True)
 
-    users = relationship("User", back_populates="tasks")
-    task = relationship("Task", back_populates="user_associations")
+    user = relationship("User", back_populates="tasks")
+    task = relationship("Task", back_populates="users")
 
 class TaskProjectAssociation(SQLAlchemyBase):
     __tablename__ = "task_project_association"
