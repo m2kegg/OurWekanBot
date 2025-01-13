@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from aiogram import Router, F
@@ -26,9 +27,11 @@ def generate_unique_project_key():
 
 
 @router.message(F.text == "Мои проекты")
-async def show_user_projects_paged(message: Message, state: FSMContext, page: int = 1):
-    user_id = message.from_user.id
+async def show_user_projects_paged(message: Message, state: FSMContext, page: int = 1, callback_query: CallbackQuery = None):
+    user_id = message.from_user.id if callback_query is None else callback_query.from_user.id
+
     session = create_db_session(DATABASE_URL)
+    await state.clear()
     user_projects = session.query(Project).join(UserProjectAssociation).filter(
         UserProjectAssociation.user_id == user_id).all()
     session.close()
@@ -64,7 +67,7 @@ async def show_user_projects_paged(message: Message, state: FSMContext, page: in
 @router.callback_query(F.data.startswith("projects_page:"))
 async def paginate_projects(callback: CallbackQuery, state: FSMContext):
     page = int(callback.data.split(":")[1])
-    await show_user_projects_paged(callback.message, state, page)
+    await show_user_projects_paged(callback.message, state, page, callback)
     await callback.answer()
 
 
@@ -170,14 +173,15 @@ async def change_user_role(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @router.callback_query(F.data.startswith("cancel_project"))
-async def change_user_role(callback: CallbackQuery, state: FSMContext):
-    if(state == CreateProjectForm.waiting_for_project_name):
+async def cancel_project_fun(callback: CallbackQuery, state: FSMContext):
+    if state == CreateProjectForm.waiting_for_project_name:
         await callback.message.answer("Создание проекта отменено", reply_markup=get_main_keyboard())
         await state.clear()
     return
 
 @router.message(F.text == "Создать проект")
 async def create_project(message: Message, state: FSMContext):
+    await state.clear()
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Отмена", callback_data="cancel_project")]
@@ -191,7 +195,8 @@ async def create_project(message: Message, state: FSMContext):
 
 @router.message(CreateProjectForm.waiting_for_project_name)
 async def process_project_name(message: Message, state: FSMContext):
-    if message.text == "Отмена":
+    if F.data == "cancel_project":
+        logging.info("Canceling project creation")
         await message.answer("Создание проекта отменено", reply_markup=get_main_keyboard())
         await state.clear()
         return
@@ -214,6 +219,8 @@ async def process_project_name(message: Message, state: FSMContext):
 
 @router.message(F.text=="Присоединиться к проекту")
 async def join_project_command(message: Message, state: FSMContext):
+    await state.clear()  # Добавляем сброс состояния
+    logging.info(FSMContext)
     await message.answer("Введите ключ проекта:")
     await state.set_state(JoinProjectForm.waiting_for_project_key)
 
