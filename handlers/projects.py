@@ -1,7 +1,8 @@
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
+import apscheduler.schedulers.background
 from aiogram import Router, F, Bot
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, \
     KeyboardButton, ReplyKeyboardRemove
@@ -15,7 +16,12 @@ from data.models import Project, UserProjectAssociation, create_db_session, User
 from data.models import Project, UserProjectAssociation, create_db_session, User
 from aiogram.methods import edit_message_text
 
+from apscheduler.triggers.date import DateTrigger
+
 router = Router()
+
+scheduler = apscheduler.schedulers.background.BackgroundScheduler()
+scheduler.start()
 
 PROJECTS_PER_PAGE = 4
 MEMBERS_PER_PAGE = 4
@@ -151,16 +157,16 @@ async def paginate_members(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @router.callback_query(F.data.startswith("create_task:"))
-async def create_task(callback: CallbackQuery, state: FSMContext):
+async def create_task(callback: CallbackQuery, state: FSMContext, bot:Bot):
     parts = callback.data.split(":")
     project_id = int(parts[1])
     await state.update_data(project_id=project_id)
-    await callback.message.edit_text("""Сейчас будет вызвана процедура создания задачи для проекта.
+    await bot.send_message(text="""Сейчас будет вызвана процедура создания задачи для проекта.
     Необходимо указать:
     1) Название задачи, 
     2) Описание (что нужно будет выполнить в рамках этой задачи) 
     3) Количество часов, которое зачтётся при выполнении этой задачи
-    4) Дедлайн выполнения данной задачи""", reply_markup=ReplyKeyboardRemove())
+    4) Дедлайн выполнения данной задачи""",chat_id=callback.from_user.id, reply_markup=ReplyKeyboardRemove())
     await state.set_state(CreateTaskForm.waiting_for_task_name)
 
 @router.callback_query(F.data.startswith("edit_roles:"))
@@ -278,9 +284,10 @@ async def back_to_task_desc(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @router.callback_query(F.data == "cancel_task")
-async def cancel_project(callback: CallbackQuery, state: FSMContext):
+async def cancel_project(callback: CallbackQuery, state: FSMContext, bot:Bot):
     await state.clear()
     await callback.message.answer("Создание задачи отменено.")
+    await bot.send_message(text = "Главное меню:", chat_id=callback.from_user.id, reply_markup=get_main_keyboard())
     await callback.answer()
 
 @router.callback_query(F.data == "confirm_assignees")
@@ -302,8 +309,8 @@ async def confirm_assignees(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @router.callback_query(CreateTaskForm.waiting_for_task_deadline, SimpleCalendarCallback.filter())
-async def process_deadline_selection(callback: CallbackQuery, state: FSMContext, calendar_data):
-    selected, date = await SimpleCalendar().process_selection(callback, calendar_data)
+async def process_deadline_selection(callback: CallbackQuery, state: FSMContext, callback_data: dict):
+    selected, date = await SimpleCalendar().process_selection(callback, callback_data)
     if selected:
         await state.update_data(deadline_date=date)
         data = await state.get_data()
@@ -330,7 +337,7 @@ async def process_deadline_selection(callback: CallbackQuery, state: FSMContext,
 
 
 @router.callback_query(F.data == "confirm_task_creation")
-async def confirm_task_creation(callback: CallbackQuery, state: FSMContext):
+async def confirm_task_creation(callback: CallbackQuery, state: FSMContext, bot:Bot):
     data = await state.get_data()
     task_name = data.get("task_name")
     task_description = data.get("task_description")
@@ -345,8 +352,10 @@ async def confirm_task_creation(callback: CallbackQuery, state: FSMContext):
             description=task_description,
             start_date=datetime.now().date(),
             deadline_date=deadline_date,
+            time_taken=0,
             State=TaskEnum.IN_WORK
         )
+        
         session.add(new_task)
         session.flush()
 
@@ -358,12 +367,16 @@ async def confirm_task_creation(callback: CallbackQuery, state: FSMContext):
             session.add(user_task_association)
 
         session.commit()
+        task_id = new_task.task_id
         session.close()
-
+        schedule_deadline_notification(task_id, deadline_date, bot)
         await callback.message.answer("Задача успешно создана!")
+     
+        await bot.send_message(text = "Главное меню:", chat_id=callback.from_user.id, reply_markup=get_main_keyboard())
         await state.clear()
     else:
         await callback.message.answer("Недостаточно данных для создания задачи. Пожалуйста, попробуйте еще раз.")
+        await bot.send_message(text = "Главное меню:", chat_id=callback.from_user.id, reply_markup=get_main_keyboard())
     await callback.answer()
 
 
@@ -399,7 +412,7 @@ async def cancel_project_naming(callback: CallbackQuery, state: FSMContext, bot:
     await callback.answer()
 
 @router.callback_query(F.data.startswith("cancel_project_view"))
-async def cancel_project_view(Message, callback: CallbackQuery, state: FSMContext, bot:Bot):
+async def cancel_project_view(callback: CallbackQuery, state: FSMContext, bot:Bot):
     await state.clear()
     await callback.message.edit_text("Просмотр проектов завершен.")
     await bot.send_message(text = "Главное меню:", chat_id=callback.from_user.id, reply_markup=get_main_keyboard())
@@ -521,3 +534,32 @@ async def process_project_key(message: Message, state: FSMContext, bot:Bot):
     session.close()
     await state.clear()
 
+
+
+def schedule_deadline_notification(task_id, deadline_date, bot: Bot):
+    notification_time = deadline_date - timedelta(days=1)  # Уведомление за 1 день до дедлайна
+    trigger = DateTrigger(run_date=notification_time)
+
+    async def send_notification(task_id, bot: Bot):
+        session = create_db_session(DATABASE_URL)  # Новая сессия
+        task = session.query(Task).get(task_id)
+        project = session.query(Project).join(TaskProjectAssociation).filter(TaskProjectAssociation.task_id == task_id).first()
+        if task and project:
+            user_ids = [assoc.user_id for assoc in session.query(UserProjectAssociation).filter(UserProjectAssociation.project_id == project.project_id).all()]
+            for user_id in user_ids:
+                try:
+                    await bot.send_message(user_id, f"Напоминание: приближается дедлайн задачи '{task.name}' в проекте '{project.name}'. Дедлайн: {task.deadline_date.strftime('%d.%m.%Y')}")
+                except Exception as e:
+                    logging.error(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
+        session.close()
+        # Удаляем задачу из планировщика после отправки уведомления
+        try:
+            scheduler.remove_job(f"notification_{task_id}")
+            logging.info(f"Задача уведомления для задачи {task_id} удалена из планировщика.")
+        except Exception as e:
+            logging.error(f"Ошибка удаления задачи уведомления: {e}")
+
+
+
+    scheduler.add_job(send_notification, trigger=trigger, args=[task_id, bot], id=f"notification_{task_id}")
+    logging.info(f"Задача уведомления для задачи {task_id} запланирована на {notification_time}")

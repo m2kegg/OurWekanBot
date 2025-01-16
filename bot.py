@@ -8,6 +8,8 @@ from middlewares.registration_middleware import RegistrationMiddleware
 from config import BOT_TOKEN, DATABASE_URL
 from data.models import create_db_session
 
+
+
 logging.basicConfig(level=logging.INFO)
 
 storage = MemoryStorage()

@@ -38,9 +38,9 @@ class Task(SQLAlchemyBase):
     __tablename__ = "tasks"
 
     name = Column(String)
-    task_id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, primary_key=True, autoincrement=True)
     description = Column(UnicodeText)
-    project_id = Column(Integer, ForeignKey("projects.project_id"), primary_key=True)
+    #project_id = Column(Integer, ForeignKey("projects.project_id"), primary_key=True)
     start_date = Column(Date)
     deadline_date = Column(Date)
     time_taken=Column(Integer)
