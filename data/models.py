@@ -7,7 +7,6 @@ import uuid
 SQLAlchemyBase = declarative_base()
 
 class TaskEnum(enum.Enum):
-    CREATED = "CREATED"
     IN_WORK = "IN_WORK"
     ON_REVISION = "ON_REVISION"
     DONE = "DONE"
