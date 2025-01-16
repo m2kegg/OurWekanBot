@@ -12,11 +12,13 @@ from aiogram_calendar import SimpleCalendar, SimpleCalendarCallback
 from config import BASE_URL, DATABASE_URL
 from data.models import Project, UserProjectAssociation, create_db_session, User, Task, TaskEnum, \
     TaskProjectAssociation, UserTaskAssociation
+from data.models import Project, UserProjectAssociation, create_db_session, User
+from aiogram.methods import edit_message_text
 
 router = Router()
 
-PROJECTS_PER_PAGE = 5
-MEMBERS_PER_PAGE = 5
+PROJECTS_PER_PAGE = 4
+MEMBERS_PER_PAGE = 4
 
 
 class CreateProjectForm(StatesGroup):
@@ -75,6 +77,8 @@ async def show_user_projects_paged(message: Message, state: FSMContext, page: in
 
     if navigation_buttons:
         keyboard_buttons.append(navigation_buttons)
+
+    keyboard_buttons.append([InlineKeyboardButton(text="❌Отмена❌", callback_data=f"cancel_project_view")])
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     if callback_query:
@@ -385,20 +389,36 @@ async def change_user_role(callback: CallbackQuery, state: FSMContext):
     session.close()
     await callback.answer()
 
-@router.callback_query(F.data == "cancel_project")
-async def cancel_project_fun(callback: CallbackQuery, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state == CreateProjectForm.waiting_for_project_name:
-        await callback.message.answer("Создание проекта отменено", reply_markup=get_main_keyboard())
+@router.callback_query(F.data.startswith("cancel_project_naming"))
+async def cancel_project_naming(callback: CallbackQuery, state: FSMContext, bot:Bot):
+    
+    await callback.message.edit_text("Создание проекта отменено")
+   
+    await state.clear()
+    await bot.send_message(text = "Главное меню:", chat_id=callback.from_user.id, reply_markup=get_main_keyboard())
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("cancel_project_view"))
+async def cancel_project_view(Message, callback: CallbackQuery, state: FSMContext, bot:Bot):
+    await state.clear()
+    await callback.message.edit_text("Просмотр проектов завершен.")
+    await bot.send_message(text = "Главное меню:", chat_id=callback.from_user.id, reply_markup=get_main_keyboard())
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("cancel_key_input"))
+async def cancel_key_input(callback: CallbackQuery, state: FSMContext, bot:Bot):
         await state.clear()
-    return
+        await callback.message.edit_text("Ввод ключа отменён.")
+        await bot.send_message(text = "Главное меню:", chat_id=callback.from_user.id, reply_markup=get_main_keyboard())
+        await callback.answer()
+
 
 @router.message(F.text == "Создать проект")
 async def create_project(message: Message, state: FSMContext):
     await state.clear()
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_project")]
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_project_naming")]
               ],
         resize_keyboard=True
     )
@@ -414,7 +434,7 @@ async def process_project_name(message: Message, state: FSMContext):
     await state.update_data(project_name=project_name)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_project")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_project_naming")],
             [InlineKeyboardButton(text="⬅️ Назад к выбору имени", callback_data="back_to_name")]
         ],
         resize_keyboard=True
@@ -453,8 +473,16 @@ async def process_project_description(message: Message, state: FSMContext):
 
 @router.message(F.text=="Присоединиться к проекту")
 async def join_project_command(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Введите ключ проекта:")
+    await state.clear()  # Добавляем сброс состояния
+    logging.info(FSMContext)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌Отмена❌", callback_data="cancel_key_input", )]
+              ],
+        resize_keyboard=True
+    )
+    await message.answer("Для того чтобы присоединиться к проекту вам надо ввести его ключ", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Введите ключ проекта:", reply_markup=keyboard)
     await state.set_state(JoinProjectForm.waiting_for_project_key)
 
 def get_main_keyboard():
@@ -469,12 +497,11 @@ def get_main_keyboard():
 
 
 @router.message(JoinProjectForm.waiting_for_project_key)
-async def process_project_key(message: Message, state: FSMContext):
+async def process_project_key(message: Message, state: FSMContext, bot:Bot):
     project_key = message.text.strip()
     user_id = message.from_user.id
     session = create_db_session(DATABASE_URL)
     project = session.query(Project).filter(Project.project_key == project_key).first()
-
     if project:
         # Проверяем, не состоит ли пользователь уже в проекте
         existing_membership = session.query(UserProjectAssociation).filter(
@@ -491,7 +518,6 @@ async def process_project_key(message: Message, state: FSMContext):
             await message.answer("Ты уже состоишь в этом проекте.")
     else:
         await message.answer("Неверный ключ проекта.")
-
     session.close()
     await state.clear()
 
