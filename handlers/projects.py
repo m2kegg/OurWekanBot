@@ -18,6 +18,8 @@ from aiogram.methods import edit_message_text
 
 from apscheduler.triggers.date import DateTrigger
 
+from llm.gigachat import analyze_employee
+
 router = Router()
 
 scheduler = apscheduler.schedulers.background.BackgroundScheduler()
@@ -25,6 +27,8 @@ scheduler.start()
 
 PROJECTS_PER_PAGE = 4
 MEMBERS_PER_PAGE = 4
+TASKS_PER_PAGE = 4
+
 
 
 class CreateProjectForm(StatesGroup):
@@ -41,6 +45,10 @@ class CreateTaskForm(StatesGroup):
     waiting_for_task_users = State()
     waiting_for_task_deadline = State()
     waiting_for_task_confirm = State()
+
+class EditTaskStatusForm(StatesGroup):
+    waiting_for_new_status = State()
+
 
 
 def generate_unique_project_key():
@@ -126,7 +134,7 @@ async def view_project_details(callback: CallbackQuery, state: FSMContext, page:
 
         for member in members_on_page:
             keyboard_buttons.append([InlineKeyboardButton(text=member.fullname,
-                                                          callback_data=f"view_member:{project_id}:{member.user_id}")])
+                                                          callback_data=f"analyze_member:{project_id}:{member.user_id}")])
 
         navigation_buttons = []
         if page > 1:
@@ -141,12 +149,141 @@ async def view_project_details(callback: CallbackQuery, state: FSMContext, page:
 
         keyboard_buttons.append(
             [InlineKeyboardButton(text="Редактировать роли", callback_data=f"edit_roles:{project_id}"),
+             InlineKeyboardButton(text="Просмотреть задачи", callback_data=f"view_tasks:{project_id}"),
              InlineKeyboardButton(text="Добавить задачу", callback_data=f"create_task:{project_id}"),])
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     await callback.message.edit_text(f"Проект: {project.name}", reply_markup=markup)
     await callback.answer()
     session.close()
+
+@router.callback_query(F.data.startswith("view_tasks:"))
+async def show_project_tasks_paged(callback: CallbackQuery, state: FSMContext, page: int = 1):
+    project_id = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id
+    session = create_db_session(DATABASE_URL)
+    project = session.query(Project).get(project_id)
+    user_association = session.query(UserProjectAssociation).filter(UserProjectAssociation.user_id == user_id,
+                                                                    UserProjectAssociation.project_id == project_id).first()
+    if not project or not user_association:
+        await callback.answer("Проект не найден или у вас нет доступа.", show_alert=True)
+        session.close()
+        return
+
+    tasks = session.query(Task).join(TaskProjectAssociation).filter(TaskProjectAssociation.project_id == project_id).all()
+    session.close()
+
+    if not tasks:
+        await callback.message.edit_text("В этом проекте пока нет задач.")
+        return
+
+    total_tasks = len(tasks)
+    start_index = (page - 1) * TASKS_PER_PAGE
+    end_index = start_index + TASKS_PER_PAGE
+    tasks_on_page = tasks[start_index:end_index]
+    total_pages = (total_tasks + TASKS_PER_PAGE - 1) // TASKS_PER_PAGE
+
+    keyboard_buttons = []
+    for task in tasks_on_page:
+        keyboard_buttons.append([InlineKeyboardButton(text=task.name, callback_data=f"view_task_details:{task.task_id}")])
+
+    navigation_buttons = []
+    if page > 1:
+        navigation_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks_page:{project_id}:{page - 1}"))
+    if page < total_pages:
+        navigation_buttons.append(InlineKeyboardButton(text="➡️ Вперед", callback_data=f"tasks_page:{project_id}:{page + 1}"))
+
+    if navigation_buttons:
+        keyboard_buttons.append(navigation_buttons)
+
+    keyboard_buttons.append([InlineKeyboardButton(text="Назад к проекту", callback_data=f"view_project:{project_id}")])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    await callback.message.edit_text(f"Задачи проекта '{project.name}':", reply_markup=markup)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("tasks_page:"))
+async def paginate_tasks(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    project_id = int(parts[1])
+    page = int(parts[2])
+    await show_project_tasks_paged(callback, state, page)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("view_task_details:"))
+async def view_task_details(callback: CallbackQuery, state: FSMContext):
+    task_id = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id
+    session = create_db_session(DATABASE_URL)
+    task = session.query(Task).get(task_id)
+    project = session.query(Project).join(TaskProjectAssociation).filter(TaskProjectAssociation.task_id == task_id).first()
+    user_association = session.query(UserProjectAssociation).filter(
+        UserProjectAssociation.user_id == user_id,
+        UserProjectAssociation.project_id == project.project_id
+    ).first()
+    session.close()
+
+    if not task:
+        await callback.answer("Задача не найдена.", show_alert=True)
+        return
+
+    message_text = f"Задача: {task.name}\n" \
+                   f"Описание: {task.description}\n" \
+                   f"Статус: {task.State.value}\n" \
+                   f"Дедлайн: {task.deadline_date.strftime('%d.%m.%Y')}"
+
+    keyboard_buttons = []
+    if user_association and user_association.role == "Администратор":
+        keyboard_buttons.append([InlineKeyboardButton(text="Изменить статус", callback_data=f"edit_task_status:{task_id}")])
+    keyboard_buttons.append([InlineKeyboardButton(text="Назад к задачам", callback_data=f"view_tasks:{project.project_id}")])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    await callback.message.edit_text(message_text, reply_markup=markup)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("edit_task_status:"))
+async def edit_task_status(callback: CallbackQuery, state: FSMContext):
+    task_id = int(callback.data.split(":")[1])
+    await state.update_data(task_id=task_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=TaskEnum.IN_WORK.value, callback_data=f"set_task_status:{task_id}:{TaskEnum.IN_WORK.value}")],
+        [InlineKeyboardButton(text=TaskEnum.ON_REVISION.value, callback_data=f"set_task_status:{task_id}:{TaskEnum.ON_REVISION.value}")],
+        [InlineKeyboardButton(text=TaskEnum.DONE.value, callback_data=f"set_task_status:{task_id}:{TaskEnum.DONE.value}")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"view_task_details:{task_id}")],
+    ])
+    await callback.message.edit_text("Выберите новый статус задачи:", reply_markup=keyboard)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("set_task_status:"))
+async def set_task_status(callback: CallbackQuery, state: FSMContext):
+    _, task_id, new_status_str = callback.data.split(":")
+    task_id = int(task_id)
+    try:
+        new_status = TaskEnum(new_status_str)
+        session = create_db_session(DATABASE_URL)
+        task = session.query(Task).get(task_id)
+        if task:
+            task.State = new_status
+            session.commit()
+            await callback.message.edit_text(f"Статус задачи '{task.name}' изменен на '{new_status.value}'.")
+        else:
+            await callback.answer("Задача не найдена.", show_alert=True)
+        session.close()
+    except ValueError:
+        await callback.answer("Неверный статус задачи.", show_alert=True)
+    await callback.answer()
+@router.callback_query(F.data.startswith("analyze_member:"))
+async def analyze_member_handler(callback: CallbackQuery, state: FSMContext):
+    _, project_id, member_id = callback.data.split(":")
+    project_id = int(project_id)
+    member_id = int(member_id)
+    try:
+        analysis_result = analyze_employee(member_id, project_id)
+        await callback.message.answer(f"Анализ производительности сотрудника:\n{analysis_result}")
+    except Exception as e:
+        logging.error(f"Ошибка при анализе сотрудника: {e}")
+        await callback.message.answer("Произошла ошибка при анализе производительности сотрудника.")
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("members_page:"))
 async def paginate_members(callback: CallbackQuery, state: FSMContext):
@@ -166,7 +303,9 @@ async def create_task(callback: CallbackQuery, state: FSMContext, bot:Bot):
     1) Название задачи, 
     2) Описание (что нужно будет выполнить в рамках этой задачи) 
     3) Количество часов, которое зачтётся при выполнении этой задачи
-    4) Дедлайн выполнения данной задачи""",chat_id=callback.from_user.id, reply_markup=ReplyKeyboardRemove())
+    4) Дедлайн выполнения данной задачи.
+    
+    Начнём с названия. Как будет называться задача?""",chat_id=callback.from_user.id, reply_markup=ReplyKeyboardRemove())
     await state.set_state(CreateTaskForm.waiting_for_task_name)
 
 @router.callback_query(F.data.startswith("edit_roles:"))
@@ -253,7 +392,7 @@ async def show_member_selection_keyboard(message: Message, state: FSMContext, pa
     await message.answer("Выбери исполнителей для задачи:", reply_markup=keyboard)
     await state.set_state(CreateTaskForm.waiting_for_task_users)
 
-@router.callback_query(F.data.startswith("check_member:"))
+@router.callback_query(CreateTaskForm.waiting_for_task_users, F.data.startswith("check_member:"))
 async def check_member(callback: CallbackQuery, state: FSMContext):
     _, project_id, user_id = callback.data.split(":")
     user_id = int(user_id)
@@ -270,14 +409,14 @@ async def check_member(callback: CallbackQuery, state: FSMContext):
     await show_member_selection_keyboard(callback.message, state, current_page_data.get('current_members_page', 1))
     await callback.answer()
 
-@router.callback_query(F.data.startswith("members_task_page:"))
+@router.callback_query(CreateTaskForm.waiting_for_task_users, F.data.startswith("members_task_page:"))
 async def navigate_members_page(callback: CallbackQuery, state: FSMContext):
     page = int(callback.data.split(":")[1])
     await state.update_data(current_members_page=page)
     await show_member_selection_keyboard(callback.message, state, page)
     await callback.answer()
 
-@router.callback_query(F.data == "back_to_task_desc")
+@router.callback_query(CreateTaskForm.waiting_for_task_description, F.data == "back_to_task_desc")
 async def back_to_task_desc(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CreateTaskForm.waiting_for_task_description)
     await callback.message.answer("Возвращаемся к редактированию описания задачи.")
@@ -290,7 +429,7 @@ async def cancel_project(callback: CallbackQuery, state: FSMContext, bot:Bot):
     await bot.send_message(text = "Главное меню:", chat_id=callback.from_user.id, reply_markup=get_main_keyboard())
     await callback.answer()
 
-@router.callback_query(F.data == "confirm_assignees")
+@router.callback_query(CreateTaskForm.waiting_for_task_users, F.data == "confirm_assignees")
 async def confirm_assignees(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     selected_members = data.get("selected_members", [])
@@ -312,15 +451,24 @@ async def confirm_assignees(callback: CallbackQuery, state: FSMContext):
 async def process_deadline_selection(callback: CallbackQuery, state: FSMContext, callback_data: dict):
     selected, date = await SimpleCalendar().process_selection(callback, callback_data)
     if selected:
+        today = datetime.now().today()
+        if date <= today:
+            await callback.answer("Дата дедлайна должна быть позже сегодняшнего дня.", show_alert=True)
+            await callback.message.edit_text(
+                "Пожалуйста, выберите корректную дату дедлайна:",
+                reply_markup=await SimpleCalendar().start_calendar()
+            )
+            return
+
         await state.update_data(deadline_date=date)
         data = await state.get_data()
         selected_members = data.get("selected_members", [])
         task_name = data.get("task_name")
         task_description = data.get("task_description")
-        await callback.message.answer(
+        await callback.message.edit_text(
             f"""Вы выбрали дедлайн: {date.strftime('%d.%m.%Y')}
             Итак, Ваша введённая задача выглядит следующим образом:
-            
+
             Название задачи: {task_name}
             Описание задачи: {task_description}
             Команда, назначенная на выполнение задачи: {selected_members}
@@ -332,7 +480,8 @@ async def process_deadline_selection(callback: CallbackQuery, state: FSMContext,
                 ]
             ),
         )
-    await callback.answer()
+        await callback.answer()
+
 
 
 

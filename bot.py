@@ -5,7 +5,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from handlers import registration, projects
 from middlewares.logging_middleware import DatabaseLoggingMiddleware
 from middlewares.registration_middleware import RegistrationMiddleware
-from config import BOT_TOKEN, DATABASE_URL
+from config import BOT_TOKEN, DATABASE_URL, DATABASE_LOG_URL
 from data.models import create_db_session
 
 logging.basicConfig(level=logging.INFO)
@@ -18,7 +18,7 @@ dp.include_router(registration.router)
 dp.include_router(projects.router)
 
 dp.message.middleware(RegistrationMiddleware())
-dp.message.middleware(DatabaseLoggingMiddleware())
+dp.message.middleware(DatabaseLoggingMiddleware(DATABASE_LOG_URL))
 
 async def main():
     # Создаем сессию для инициализации базы данных
