@@ -1,6 +1,6 @@
 ## Ссылка на Telegram-бота
 
-t.me/OurWekanBot
+!(t.me/OurWekanBot)
 
 
 ## Блок-схема бота
