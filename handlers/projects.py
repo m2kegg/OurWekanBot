@@ -18,7 +18,8 @@ from aiogram.methods import edit_message_text
 
 from apscheduler.triggers.date import DateTrigger
 
-from llm.gigachat import analyze_employee
+from handlers.registration import show_main_menu
+from llm.gigachat import analyze_employee, get_task_advice
 
 router = Router()
 
@@ -44,6 +45,7 @@ class CreateTaskForm(StatesGroup):
     waiting_for_task_description = State()
     waiting_for_task_users = State()
     waiting_for_task_deadline = State()
+    waiting_for_task_hours = State()
     waiting_for_task_confirm = State()
 
 class EditTaskStatusForm(StatesGroup):
@@ -54,6 +56,7 @@ class EditTaskStatusForm(StatesGroup):
 def generate_unique_project_key():
     return uuid.uuid4().hex[:8]
 
+router = Router()
 
 @router.message(F.text == "Мои проекты")
 async def show_user_projects_paged(message: Message, state: FSMContext, page: int = 1, callback_query: CallbackQuery = None):
@@ -236,9 +239,19 @@ async def view_task_details(callback: CallbackQuery, state: FSMContext):
     if user_association and user_association.role == "Администратор":
         keyboard_buttons.append([InlineKeyboardButton(text="Изменить статус", callback_data=f"edit_task_status:{task_id}")])
     keyboard_buttons.append([InlineKeyboardButton(text="Назад к задачам", callback_data=f"view_tasks:{project.project_id}")])
+    keyboard_buttons.append([InlineKeyboardButton(text="Проанализировать задачу", callback_data=f"analyze_task:{task_id}")])
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     await callback.message.edit_text(message_text, reply_markup=markup)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("analyze_task:"))
+async def analyze_task_callback(callback: CallbackQuery, state: FSMContext):
+    task_id = int(callback.data.split(":")[1])
+    advice = get_task_advice(task_id)
+    keyboard = []
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"view_task_details:{task_id}")])
+    await callback.message.edit_text(text=advice, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
 @router.callback_query(F.data.startswith("edit_task_status:"))
@@ -438,14 +451,25 @@ async def confirm_assignees(callback: CallbackQuery, state: FSMContext):
         assignees = session.query(User).filter(User.user_id.in_(selected_members)).all()
         session.close()
         assignee_names = [user.fullname for user in assignees]
-        calendar = SimpleCalendar(locale="ru")
         await callback.message.answer(f"Вы выбрали следующих исполнителей: {', '.join(assignee_names)}")
+        await callback.message.answer("Теперь, пожалуйста, напишите количество часов. которое будет зачтено при выполнении данной задачи:")
+        await state.set_state(CreateTaskForm.waiting_for_task_hours)
+    else:
+        await callback.message.answer("Вы не выбрали ни одного исполнителя.", show_alert=True)
+    await callback.answer()
+
+@router.callback_query(CreateTaskForm.waiting_for_task_hours)
+async def process_hours(callback: CallbackQuery, state: FSMContext):
+    hours = callback.message.text
+    if hours.isnumeric():
+        hours = int(hours)
+        await state.update_data(hours=hours)
         await callback.message.answer("Теперь, пожалуйста, выберите дату дедлайна:",
                                       reply_markup=await SimpleCalendar().start_calendar())
-        await state.set_state(CreateTaskForm.waiting_for_task_deadline)
+        await state.set_state(CreateTaskForm.waiting_for_task_hours)
     else:
-        await callback.message.answer("Вы не выбрали ни одного исполнителя.")
-    await callback.answer()
+        await callback.message.answer("Просьба ввести часы в целом десятичном виде", show_alert=True)
+
 
 @router.callback_query(CreateTaskForm.waiting_for_task_deadline, SimpleCalendarCallback.filter())
 async def process_deadline_selection(callback: CallbackQuery, state: FSMContext, callback_data: dict):
@@ -463,15 +487,21 @@ async def process_deadline_selection(callback: CallbackQuery, state: FSMContext,
         await state.update_data(deadline_date=date)
         data = await state.get_data()
         selected_members = data.get("selected_members", [])
+        session = create_db_session(DATABASE_URL)
+        assignees = session.query(User).filter(User.user_id.in_(selected_members)).all()
+        session.close()
+        assignee_names = [user.fullname for user in assignees]
         task_name = data.get("task_name")
         task_description = data.get("task_description")
+        hours = data.get("hours")
         await callback.message.edit_text(
             f"""Вы выбрали дедлайн: {date.strftime('%d.%m.%Y')}
             Итак, Ваша введённая задача выглядит следующим образом:
 
             Название задачи: {task_name}
             Описание задачи: {task_description}
-            Команда, назначенная на выполнение задачи: {selected_members}
+            Команда, назначенная на выполнение задачи: {assignee_names}
+            Количество часов: {hours}
             Дедлайн: {date.strftime('%d.%m.%Y')}""",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
